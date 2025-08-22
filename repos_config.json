@@ -1,0 +1,12 @@
+{
+  "repositories": [
+    {
+      "url": "https://dev.azure.com/<REPOSITORY-URL1>",
+      "token": "YOUR-PAT1"
+    },
+    {
+      "url": "https://dev.azure.com/<REPOSITORY-URL2>",
+      "token": "YOUR-PAT2"
+    }
+  ]
+}
