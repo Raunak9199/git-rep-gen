@@ -54,22 +54,36 @@ class AzureDevOpsCommitsFetcher:
         
         return organization, project, repo_name
     
-    def fetch_commits(self, repo_url, token, days_back=30, skip_branches=False, author_filter=None):
+    def fetch_commits(self, repo_url, token, days_back=30, skip_branches=False, author_filter=None, start_date=None, end_date=None):
         """Fetch commits from a repository"""
         try:
             self.setup_auth(token)
             organization, project, repo_name = self.parse_repo_url(repo_url)
             
-            # Calculate date range
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=days_back)
+            # FIXED: Calculate date range correctly
+            if start_date and end_date:
+                # Use custom date range - these should already be datetime objects
+                fetch_start_date = start_date
+                fetch_end_date = end_date
+            elif start_date:
+                # Use start_date and calculate end_date
+                fetch_start_date = start_date
+                fetch_end_date = datetime.now()
+            elif end_date:
+                # Use end_date and calculate start_date
+                fetch_end_date = end_date
+                fetch_start_date = end_date - timedelta(days=days_back)
+            else:
+                # Use days_back from current date
+                fetch_end_date = datetime.now()
+                fetch_start_date = fetch_end_date - timedelta(days=days_back)
             
             # Azure DevOps REST API endpoint for commits
             api_url = f"https://dev.azure.com/{organization}/{project}/_apis/git/repositories/{repo_name}/commits"
             
             params = {
-                'searchCriteria.fromDate': start_date.isoformat(),
-                'searchCriteria.toDate': end_date.isoformat(),
+                'searchCriteria.fromDate': fetch_start_date.isoformat(),
+                'searchCriteria.toDate': fetch_end_date.isoformat(),
                 'api-version': '7.0',
                 '$top': 1000  # Maximum commits to fetch
             }
@@ -78,7 +92,7 @@ class AzureDevOpsCommitsFetcher:
             if author_filter:
                 params['searchCriteria.author'] = author_filter
             
-            print(f"Fetching commits from {repo_name}...")
+            print(f"Fetching commits from {repo_name} (from {fetch_start_date.strftime('%Y-%m-%d')} to {fetch_end_date.strftime('%Y-%m-%d')})...")
             response = self.session.get(api_url, params=params)
             response.raise_for_status()
             
@@ -204,7 +218,7 @@ class AzureDevOpsCommitsFetcher:
         
         return organized
     
-    def generate_pdf(self, organized_commits, output_filename='azure_devops_commits_report.pdf', author_filter=None):
+    def generate_pdf(self, organized_commits, output_filename='azure_devops_commits_report.pdf', author_filter=None, date_range=None):
         """Generate PDF report from organized commits"""
         doc = SimpleDocTemplate(output_filename, pagesize=A4)
         styles = getSampleStyleSheet()
@@ -258,6 +272,8 @@ class AzureDevOpsCommitsFetcher:
         story.append(Paragraph(f"Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles['Normal']))
         if author_filter:
             story.append(Paragraph(f"Filtered by author: {author_filter}", styles['Normal']))
+        if date_range:
+            story.append(Paragraph(f"Date range: {date_range}", styles['Normal']))
         story.append(Spacer(1, 20))
         
         # Summary
@@ -335,9 +351,11 @@ class AzureDevOpsCommitsFetcher:
 def main():
     parser = argparse.ArgumentParser(description='Generate PDF report of Azure DevOps commits')
     parser.add_argument('--config', help='JSON config file with repositories and tokens')
+    parser.add_argument('--start-date', help='Start date for commits (YYYY-MM-DD format, e.g., 2024-01-01)')
+    parser.add_argument('--end-date', help='End date for commits (YYYY-MM-DD format, e.g., 2024-01-31)')
     parser.add_argument('--author', help='Filter commits by author email or name (e.g., your.email@company.com or "Your Name")')
     parser.add_argument('--no-branches', action='store_true', help='Skip branch detection for faster processing')
-    parser.add_argument('--days', type=int, default=30, help='Number of days back to fetch commits (default: 30)')
+    parser.add_argument('--days', type=int, default=30, help='Number of days back to fetch commits (default: 30, ignored if start-date is provided)')
     parser.add_argument('--output', default='azure_devops_commits_report.pdf', help='Output PDF filename')
     
     args = parser.parse_args()
@@ -368,6 +386,15 @@ def main():
             author_input = input("\nEnter your email or name to filter commits (leave empty for all commits): ").strip()
             if author_input:
                 args.author = author_input
+        
+        # Get date range if not provided via command line
+        if not args.start_date and not args.end_date:
+            date_input = input(f"\nEnter start date (YYYY-MM-DD) or press Enter for last {args.days} days: ").strip()
+            if date_input:
+                args.start_date = date_input
+                end_input = input("Enter end date (YYYY-MM-DD) or press Enter for today: ").strip()
+                if end_input:
+                    args.end_date = end_input
     else:
         # Load from config file
         try:
@@ -381,6 +408,29 @@ def main():
             print(f"Invalid JSON in config file {args.config}")
             sys.exit(1)
     
+    # FIXED: Parse and validate dates
+    start_date_obj = None
+    end_date_obj = None
+    
+    if args.start_date:
+        try:
+            start_date_obj = datetime.strptime(args.start_date, '%Y-%m-%d')
+        except ValueError:
+            print(f"Invalid start date format: {args.start_date}. Use YYYY-MM-DD format.")
+            sys.exit(1)
+    
+    if args.end_date:
+        try:
+            end_date_obj = datetime.strptime(args.end_date, '%Y-%m-%d')
+        except ValueError:
+            print(f"Invalid end date format: {args.end_date}. Use YYYY-MM-DD format.")
+            sys.exit(1)
+    
+    # Validate date range
+    if start_date_obj and end_date_obj and start_date_obj > end_date_obj:
+        print("Error: Start date cannot be after end date.")
+        sys.exit(1)
+    
     # Fetch commits
     fetcher = AzureDevOpsCommitsFetcher()
     all_commits = []
@@ -391,7 +441,9 @@ def main():
             repo_config['token'], 
             args.days, 
             skip_branches=getattr(args, 'no_branches', False),
-            author_filter=args.author
+            author_filter=args.author,
+            start_date=start_date_obj,
+            end_date=end_date_obj
         )
         all_commits.extend(commits)
     
@@ -401,7 +453,18 @@ def main():
     
     # Organize and generate PDF
     organized_commits = fetcher.organize_commits_by_date_and_repo(all_commits)
-    fetcher.generate_pdf(organized_commits, args.output, author_filter=args.author)
+    
+    # Create date range string for PDF
+    date_range_str = None
+    if start_date_obj or end_date_obj:
+        if start_date_obj and end_date_obj:
+            date_range_str = f"{start_date_obj.strftime('%Y-%m-%d')} to {end_date_obj.strftime('%Y-%m-%d')}"
+        elif start_date_obj:
+            date_range_str = f"From {start_date_obj.strftime('%Y-%m-%d')} to {datetime.now().strftime('%Y-%m-%d')}"
+        elif end_date_obj:
+            date_range_str = f"Last {args.days} days ending {end_date_obj.strftime('%Y-%m-%d')}"
+    
+    fetcher.generate_pdf(organized_commits, args.output, author_filter=args.author, date_range=date_range_str)
     
     print(f"\nReport generated successfully!")
     print(f"Total commits processed: {len(all_commits)}")
@@ -409,6 +472,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-# RUN CMD : -> python3 git_rep_gen.py --config repos_config.json --days 30 --output my_commits.pdf --author "raunakraj94543"
