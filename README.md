@@ -44,6 +44,8 @@ Options:
 
 --output → PDF file to generate (default: commits_report.pdf).
 
+--start-date 2025-01-01 --end-date 2025-01-31
+
 --author → Filter commits by author’s full name (optional).
 
 📂 Example
